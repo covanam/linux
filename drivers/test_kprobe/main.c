@@ -60,6 +60,31 @@ static int install_probes(void) {
 	return 0;
 }
 
+static int install_illegal_probes(void) {
+	struct kprobe *kp = kmalloc(7 * sizeof(struct kprobe), GFP_KERNEL);
+
+	int ret;
+	unsigned offset = 0;
+
+	for (int i = 0; i < 7; ++i) {
+		kp[i].symbol_name = "ret_from_exception";
+		kp[i].pre_handler = kprobe_handler;
+		kp[i].offset = offset;
+
+		ret = register_kprobe(&kp[i]);
+		if (ret) {
+			printk("Couldn't register illegal kprobe, err=%d\n", ret);
+		} else {
+			printk("Successfully install illegal kprobe\n");
+			return -1;
+		}
+
+		offset += GET_INSN_LENGTH(*kp[i].addr);
+	}
+
+	return 0;
+}
+
 static int __init module_start(void)
 {
 	printk("Hello world\n");
@@ -73,6 +98,10 @@ static int __init module_start(void)
 		return -1;
 	} else {
 		printk("Hash is still correct\n");
+	}
+
+	if (install_illegal_probes()) {
+		return -1;
 	}
 
 	if (callback_called != 5)
