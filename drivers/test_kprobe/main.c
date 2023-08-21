@@ -71,6 +71,8 @@ static int __init module_start(void)
 	if (test_sha256()) {
 		printk("Hashing failed\n");
 		return -1;
+	} else {
+		printk("Hash is still correct\n");
 	}
 
 	if (callback_called != 5)
