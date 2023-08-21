@@ -31,18 +31,17 @@ int test_sha256(void) {
 
 static int callback_called = 0;
 static int kprobe_handler(struct kprobe *p, struct pt_regs *regs) {
-	printk("Handler called\n");
 	callback_called++;
 	return 0;
 }
 
 static int install_probes(void) {
-	struct kprobe *kp = kmalloc(5 * sizeof(struct kprobe), GFP_KERNEL);
+	struct kprobe *kp = kmalloc(100 * sizeof(struct kprobe), GFP_KERNEL);
 
 	int ret;
 	unsigned offset = 0;
 
-	for (int i = 0; i < 5; ++i) {
+	for (int i = 0; i < 100; ++i) {
 		kp[i].symbol_name = "tc_sha256_final";
 		kp[i].pre_handler = kprobe_handler;
 		kp[i].offset = offset;
