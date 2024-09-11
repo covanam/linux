@@ -365,7 +365,7 @@ void __init pat_bp_init(void)
 #undef PAT
 }
 
-static DEFINE_SPINLOCK(memtype_lock);	/* protects memtype accesses */
+static DEFINE_MUTEX(memtype_lock);	/* protects memtype accesses */
 
 /*
  * Does intersection of PAT memory type and MTRR memory type and returns
@@ -597,7 +597,7 @@ int memtype_reserve(u64 start, u64 end, enum page_cache_mode req_type,
 	entry_new->end	 = end;
 	entry_new->type	 = actual_type;
 
-	spin_lock(&memtype_lock);
+	mutex_lock(&memtype_lock);
 
 	err = memtype_check_insert(entry_new, new_type);
 	if (err) {
@@ -605,12 +605,12 @@ int memtype_reserve(u64 start, u64 end, enum page_cache_mode req_type,
 			start, end - 1,
 			cattr_name(entry_new->type), cattr_name(req_type));
 		kfree(entry_new);
-		spin_unlock(&memtype_lock);
+		mutex_unlock(&memtype_lock);
 
 		return err;
 	}
 
-	spin_unlock(&memtype_lock);
+	mutex_unlock(&memtype_lock);
 
 	dprintk("memtype_reserve added [mem %#010Lx-%#010Lx], track %s, req %s, ret %s\n",
 		start, end - 1, cattr_name(entry_new->type), cattr_name(req_type),
@@ -640,9 +640,9 @@ int memtype_free(u64 start, u64 end)
 	if (is_range_ram < 0)
 		return -EINVAL;
 
-	spin_lock(&memtype_lock);
+	mutex_lock(&memtype_lock);
 	entry_old = memtype_erase(start, end);
-	spin_unlock(&memtype_lock);
+	mutex_unlock(&memtype_lock);
 
 	if (IS_ERR(entry_old)) {
 		pr_info("x86/PAT: %s:%d freeing invalid memtype [mem %#010Lx-%#010Lx]\n",
@@ -682,7 +682,7 @@ static enum page_cache_mode lookup_memtype(u64 paddr)
 		return get_page_memtype(page);
 	}
 
-	spin_lock(&memtype_lock);
+	mutex_lock(&memtype_lock);
 
 	entry = memtype_lookup(paddr);
 	if (entry != NULL)
@@ -690,7 +690,7 @@ static enum page_cache_mode lookup_memtype(u64 paddr)
 	else
 		rettype = _PAGE_CACHE_MODE_UC_MINUS;
 
-	spin_unlock(&memtype_lock);
+	mutex_unlock(&memtype_lock);
 
 	return rettype;
 }
@@ -1157,9 +1157,9 @@ static struct memtype *memtype_get_idx(loff_t pos)
 	if (!entry_print)
 		return NULL;
 
-	spin_lock(&memtype_lock);
+	mutex_lock(&memtype_lock);
 	ret = memtype_copy_nth_element(entry_print, pos);
-	spin_unlock(&memtype_lock);
+	mutex_unlock(&memtype_lock);
 
 	/* Free it on error: */
 	if (ret) {
