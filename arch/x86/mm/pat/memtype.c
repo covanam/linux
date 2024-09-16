@@ -536,7 +536,6 @@ static u64 sanitize_phys(u64 address)
 int memtype_reserve(u64 start, u64 end, enum page_cache_mode req_type,
 		    enum page_cache_mode *new_type)
 {
-	struct memtype *entry_new;
 	enum page_cache_mode actual_type;
 	int is_range_ram;
 	int err = 0;
@@ -589,31 +588,22 @@ int memtype_reserve(u64 start, u64 end, enum page_cache_mode req_type,
 		return -EINVAL;
 	}
 
-	entry_new = kzalloc(sizeof(struct memtype), GFP_KERNEL);
-	if (!entry_new)
-		return -ENOMEM;
-
-	entry_new->start = start;
-	entry_new->end	 = end;
-	entry_new->type	 = actual_type;
-
 	mutex_lock(&memtype_lock);
+	err = memtype_check_insert(start, end, actual_type, new_type);
+	mutex_unlock(&memtype_lock);
 
-	err = memtype_check_insert(entry_new, new_type);
+	if (new_type)
+		actual_type = *new_type;
+
 	if (err) {
 		pr_info("x86/PAT: memtype_reserve failed [mem %#010Lx-%#010Lx], track %s, req %s\n",
 			start, end - 1,
-			cattr_name(entry_new->type), cattr_name(req_type));
-		kfree(entry_new);
-		mutex_unlock(&memtype_lock);
-
+			cattr_name(actual_type), cattr_name(req_type));
 		return err;
 	}
 
-	mutex_unlock(&memtype_lock);
-
 	dprintk("memtype_reserve added [mem %#010Lx-%#010Lx], track %s, req %s, ret %s\n",
-		start, end - 1, cattr_name(entry_new->type), cattr_name(req_type),
+		start, end - 1, cattr_name(actual_type), cattr_name(req_type),
 		new_type ? cattr_name(*new_type) : "-");
 
 	return err;
@@ -622,7 +612,7 @@ int memtype_reserve(u64 start, u64 end, enum page_cache_mode req_type,
 int memtype_free(u64 start, u64 end)
 {
 	int is_range_ram;
-	struct memtype *entry_old;
+	int err;
 
 	if (!pat_enabled())
 		return 0;
@@ -641,16 +631,14 @@ int memtype_free(u64 start, u64 end)
 		return -EINVAL;
 
 	mutex_lock(&memtype_lock);
-	entry_old = memtype_erase(start, end);
+	err = memtype_erase(start, end);
 	mutex_unlock(&memtype_lock);
 
-	if (IS_ERR(entry_old)) {
+	if (err) {
 		pr_info("x86/PAT: %s:%d freeing invalid memtype [mem %#010Lx-%#010Lx]\n",
 			current->comm, current->pid, start, end - 1);
-		return -EINVAL;
+		return err;
 	}
-
-	kfree(entry_old);
 
 	dprintk("memtype_free request [mem %#010Lx-%#010Lx]\n", start, end - 1);
 

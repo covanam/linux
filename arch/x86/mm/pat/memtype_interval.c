@@ -49,32 +49,6 @@ INTERVAL_TREE_DEFINE(struct memtype, rb, u64, subtree_max_end,
 
 static struct rb_root_cached memtype_rbroot = RB_ROOT_CACHED;
 
-enum {
-	MEMTYPE_EXACT_MATCH	= 0,
-	MEMTYPE_END_MATCH	= 1
-};
-
-static struct memtype *memtype_match(u64 start, u64 end, int match_type)
-{
-	struct memtype *entry_match;
-
-	entry_match = interval_iter_first(&memtype_rbroot, start, end-1);
-
-	while (entry_match != NULL && entry_match->start < end) {
-		if ((match_type == MEMTYPE_EXACT_MATCH) &&
-		    (entry_match->start == start) && (entry_match->end == end))
-			return entry_match;
-
-		if ((match_type == MEMTYPE_END_MATCH) &&
-		    (entry_match->start < start) && (entry_match->end == end))
-			return entry_match;
-
-		entry_match = interval_iter_next(entry_match, start, end-1);
-	}
-
-	return NULL; /* Returns NULL if there is no match */
-}
-
 static int memtype_check_conflict(u64 start, u64 end,
 				  enum page_cache_mode reqtype,
 				  enum page_cache_mode *newtype)
@@ -113,52 +87,125 @@ failure:
 	return -EBUSY;
 }
 
-int memtype_check_insert(struct memtype *entry_new, enum page_cache_mode *ret_type)
+static int memtype_split_range(u64 addr, bool nofail)
 {
-	int err = 0;
+	struct memtype *entry, *new;
+	gfp_t flags = GFP_KERNEL;
 
-	err = memtype_check_conflict(entry_new->start, entry_new->end, entry_new->type, ret_type);
+	if (nofail)
+		flags |= __GFP_NOFAIL;
+
+	entry = memtype_lookup(addr);
+	if (!entry || entry->start == addr)
+		return 0;
+
+	new = kmalloc(sizeof(*new), flags);
+	if (!new)
+		return -ENOMEM;
+
+	interval_remove(entry, &memtype_rbroot);
+
+	new->start = addr;
+	new->end = entry->end;
+	new->count = entry->count;
+	new->type = entry->type;
+
+	entry->end = addr;
+
+	interval_insert(entry, &memtype_rbroot);
+	interval_insert(new, &memtype_rbroot);
+
+	return 0;
+}
+
+static int memtype_insert(u64 start, u64 end, enum page_cache_mode type)
+{
+	struct memtype *new = kmalloc(sizeof(*new), GFP_KERNEL);
+
+	if (!new)
+		return -ENOMEM;
+
+	new->start = start;
+	new->end = end;
+	new->type = type;
+	new->count = 1;
+	interval_insert(new, &memtype_rbroot);
+
+	return 0;
+}
+
+int memtype_check_insert(u64 start, u64 end, enum page_cache_mode type,
+			 enum page_cache_mode *ret_type)
+{
+	struct memtype *entry;
+	int err = 0;
+	u64 addr;
+
+	err = memtype_check_conflict(start, end, type, ret_type);
+	if (err)
+		return err;
+
+	err = memtype_split_range(start, false);
+	if (err)
+		return err;
+	err = memtype_split_range(end, false);
 	if (err)
 		return err;
 
 	if (ret_type)
-		entry_new->type = *ret_type;
+		type = *ret_type;
 
-	interval_insert(entry_new, &memtype_rbroot);
+	addr = start;
+	entry = interval_iter_first(&memtype_rbroot, addr, end - 1);
+	while (addr < end) {
+		if (!entry) {
+			err = memtype_insert(addr, end, type);
+			if (err)
+				goto undo;
+			break;
+		}
+
+		if (entry->start > addr) {
+			err = memtype_insert(addr, entry->start, type);
+			if (err)
+				goto undo;
+		}
+
+		entry->count++;
+
+		addr = entry->end;
+		entry = interval_iter_next(entry, addr, end);
+	}
+
 	return 0;
+undo:
+	if (addr > start)
+		memtype_erase(start, addr);
+	return err;
 }
 
-struct memtype *memtype_erase(u64 start, u64 end)
+int memtype_erase(u64 start, u64 end)
 {
-	struct memtype *entry_old;
+	struct memtype *entry, *next;
 
-	/*
-	 * Since the memtype_rbroot tree allows overlapping ranges,
-	 * memtype_erase() checks with EXACT_MATCH first, i.e. free
-	 * a whole node for the munmap case.  If no such entry is found,
-	 * it then checks with END_MATCH, i.e. shrink the size of a node
-	 * from the end for the mremap case.
-	 */
-	entry_old = memtype_match(start, end, MEMTYPE_EXACT_MATCH);
-	if (!entry_old) {
-		entry_old = memtype_match(start, end, MEMTYPE_END_MATCH);
-		if (!entry_old)
-			return ERR_PTR(-EINVAL);
+	memtype_split_range(start, true);
+	memtype_split_range(end, true);
+
+	entry = interval_iter_first(&memtype_rbroot, start, end - 1);
+	while (start < end) {
+		if (!entry || entry->start != start)
+			return -EINVAL;
+
+		start = entry->end;
+		next = interval_iter_next(entry, start, end);
+
+		if (!--entry->count)
+			interval_remove(entry, &memtype_rbroot);
+
+		entry = next;
 	}
 
-	if (entry_old->start == start) {
-		/* munmap: erase this node */
-		interval_remove(entry_old, &memtype_rbroot);
-	} else {
-		/* mremap: update the end value of this node */
-		interval_remove(entry_old, &memtype_rbroot);
-		entry_old->end = start;
-		interval_insert(entry_old, &memtype_rbroot);
-
-		return NULL;
-	}
-
-	return entry_old;
+	return 0;
 }
 
 struct memtype *memtype_lookup(u64 addr)

@@ -8,6 +8,7 @@ extern int pat_debug_enable;
 	do { if (pat_debug_enable) pr_info("x86/PAT: " fmt, ##arg); } while (0)
 
 struct memtype {
+	unsigned int		count;
 	u64			start;
 	u64			end;
 	u64			subtree_max_end;
@@ -29,9 +30,9 @@ static inline char *cattr_name(enum page_cache_mode pcm)
 }
 
 #ifdef CONFIG_X86_PAT
-extern int memtype_check_insert(struct memtype *entry_new,
-				enum page_cache_mode *new_type);
-extern struct memtype *memtype_erase(u64 start, u64 end);
+extern int memtype_check_insert(u64 start, u64 end, enum page_cache_mode type,
+				enum page_cache_mode *ret_type);
+extern int memtype_erase(u64 start, u64 end);
 extern struct memtype *memtype_lookup(u64 addr);
 extern int memtype_copy_nth_element(struct memtype *entry_out, loff_t pos);
 #else
