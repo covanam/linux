@@ -635,7 +635,7 @@ int memtype_free(u64 start, u64 end)
 	mutex_unlock(&memtype_lock);
 
 	if (err) {
-		pr_info("x86/PAT: %s:%d freeing invalid memtype [mem %#010Lx-%#010Lx]\n",
+		pr_warn("x86/PAT: %s:%d freeing invalid memtype [mem %#010Lx-%#010Lx]\n",
 			current->comm, current->pid, start, end - 1);
 		return err;
 	}
