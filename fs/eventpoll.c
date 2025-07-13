@@ -757,8 +757,21 @@ static void ep_done_scan(struct eventpoll *ep,
 	 * other events might have been queued by the poll callback.
 	 * We re-insert them inside the main ready-list here.
 	 */
-	for (nepi = READ_ONCE(ep->ovflist); (epi = nepi) != NULL;
-	     nepi = epi->next, epi->next = EP_UNACTIVE_PTR) {
+	for (epi = READ_ONCE(ep->ovflist); epi; epi = nepi) {
+		nepi = epi->next;
+		WRITE_ONCE(epi->next, EP_UNACTIVE_PTR);
+
+		/*
+		 * Guarantee that before the list_add() below, the
+		 * WRITE_ONCE(epi->next, EP_UNACTIVE_PTR) above is
+		 * visible to ep_poll_callback() already.
+		 *
+		 * This allows ep_poll_callback() to simply read
+		 * epi->next to determine whether epi is going to be
+		 * in the the list eventually.
+		 */
+		smp_mb();
+
 		/*
 		 * We need to check if the item is already in the list.
 		 * During the "sproc" callback execution time, items are
@@ -1273,6 +1286,16 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 	 */
 	if (pollflags && !(pollflags & epi->event.events))
 		goto out_unlock;
+
+	/*
+	 * If this item is already on the overflow list, then it will eventually
+	 * be added to rdllist. Nothing to do.
+	 *
+	 * Note: the smp_wmb() in ep_done_scan() guarantees that if we see this,
+	 * then list_add() has not happened yet.
+	 */
+	if (READ_ONCE(epi->next) != EP_UNACTIVE_PTR)
+		goto out;
 
 	/*
 	 * If we are transferring events to userspace, we can hold no locks
