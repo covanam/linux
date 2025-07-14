@@ -1002,8 +1002,20 @@ static __poll_t __ep_eventpoll_poll(struct file *file, poll_table *wait, int dep
 	mutex_lock_nested(&ep->mtx, depth);
 	ep_start_scan(ep, &txlist);
 	list_for_each_entry_safe(epi, tmp, &txlist, rdllink) {
+		WRITE_ONCE(epi->rdllink.next, &epi->rdllink);
+
+		/*
+		 * Guarantee that unlinking epi is visible before ep_item_poll().
+		 *
+		 * Pair with the memory barrier in ep_poll_callback(). This allows
+		 * ep_poll_callback() to simply check ep_is_linked(epi) and decide whether
+		 * it is okay to skip adding epi to rdllist.
+		 */
+		smp_mb();
+
 		if (ep_item_poll(epi, &pt, depth + 1)) {
 			res = EPOLLIN | EPOLLRDNORM;
+			WRITE_ONCE(epi->rdllink.next, &epi->rdllink);
 			break;
 		} else {
 			/*
@@ -1012,7 +1024,8 @@ static __poll_t __ep_eventpoll_poll(struct file *file, poll_table *wait, int dep
 			 * caller requested events goes. We can remove it here.
 			 */
 			__pm_relax(ep_wakeup_source(epi));
-			list_del_init(&epi->rdllink);
+			__list_del(epi->rdllink.prev, &tmp->rdllink);
+			WRITE_ONCE(epi->rdllink.prev, &epi->rdllink);
 		}
 	}
 	ep_done_scan(ep, &txlist);
@@ -1295,6 +1308,18 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 	 * then list_add() has not happened yet.
 	 */
 	if (READ_ONCE(epi->next) != EP_UNACTIVE_PTR)
+		goto out;
+
+	/*
+	 * Guarantee that ep_item_poll() would see the available events before
+	 * ep_is_linked(epi) below.
+	 *
+	 * Pair with the memory barrier in ep_send_events() and __ep_eventpoll_poll().
+	 */
+	smp_mb();
+
+	/* If this item is already on a list, then it is guaranteed that waiters will see it */
+	if (ep_is_linked(epi))
 		goto out;
 
 	/*
@@ -1831,6 +1856,15 @@ static int ep_send_events(struct eventpoll *ep,
 		}
 
 		list_del_init(&epi->rdllink);
+
+		/*
+		 * Guarantee that unlinking epi is visible before ep_item_poll().
+		 *
+		 * Pair with the memory barrier in ep_poll_callback(). This allows
+		 * ep_poll_callback() to simply check ep_is_linked(epi) and decide whether
+		 * it is okay to skip adding epi to rdllist.
+		 */
+		smp_mb();
 
 		/*
 		 * If the event mask intersect the caller-requested one,
